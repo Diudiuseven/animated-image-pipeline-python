@@ -103,3 +103,48 @@ def test_single_corrupt_frame_does_not_drop_animation(tight_config):
     cut = data[: int(len(data) * 0.7)]
     r = rej(cut, output_format="GIF")
     assert r.code == "TRUNCATED_OR_UNDECODABLE"
+
+
+def _make_apng_with_duration_ms(duration_ms: int) -> bytes:
+    import struct
+    import zlib
+
+    import numpy as np
+
+    def chunk(t, b):
+        return (
+            struct.pack(">I", len(b)) + t + b
+            + struct.pack(">I", zlib.crc32(t + b) & 0xFFFFFFFF)
+        )
+
+    def fctl(seq, ms):
+        # duration_ms = delay_num*1000/delay_den; stay within u16 fields
+        if ms <= 65535:
+            num, den = ms, 1000
+        else:
+            num, den = min(ms // 1000, 65535), 1  # express in whole seconds
+        return chunk(
+            b"fcTL",
+            struct.pack(">5I", seq, 8, 8, 0, 0)
+            + struct.pack(">HHBB", num, den, 0, 0),
+        )
+
+    arr = np.zeros((8, 8, 4), dtype=np.uint8)
+    arr[..., 3] = 255
+    raw = chunk(b"IDAT", zlib.compress(b"".join(b"\x00" + r.tobytes() for r in arr)))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 8, 8, 8, 6, 0, 0, 0))
+        + chunk(b"acTL", struct.pack(">II", 1, 0))
+        + fctl(0, duration_ms)
+        + raw
+        + chunk(b"IEND", b"")
+    )
+
+
+def test_excessive_frame_duration_rejected(tight_config):
+    cfg = PipelineConfig(limits=Limits(max_frame_duration_ms=500))
+    bad = _make_apng_with_duration_ms(999_999)
+    assert rej(bad, cfg, output_format="PNG").code == "INVALID_FRAME_METADATA"
+    ok = _make_apng_with_duration_ms(250)
+    assert hasattr(rej(ok, cfg, output_format="PNG"), "data")
