@@ -25,30 +25,29 @@ from .transform import compute_target_size, resize_frames
 from .validation import validate_process_request, validate_request_bytes
 
 
-def process(req: ProcessRequest, config: PipelineConfig | None = None) -> ProcessResult:
-    """Synchronously process one request; raises PipelineError on failure."""
-    cfg = config or DEFAULT_CONFIG
+def decode_stage(req: ProcessRequest, cfg: PipelineConfig):
+    """Validate + decode + composite. Returns (decoded, composited).
 
-    # 1. Early rejection - nothing partial exists yet.
+    This is the CPU/memory-heavy input side and is what the decode worker
+    pool bounds. Raises PipelineError on any problem.
+    """
     validate_request_bytes(req.source, cfg)
     validate_process_request(req, cfg)
-
-    # 2. Decode fully (frames, metadata, orientation, color).
     decoded = decode(req.source, cfg, source_id=req.source_id)
-
-    # 3. Composite every frame to a full canvas.
     composited = composite_frames(decoded)
     if not composited:
         raise PipelineError("decoded image has no frames")
+    return decoded, composited
 
-    # 4. Resize deterministically.
+
+def encode_stage(req: ProcessRequest, cfg: PipelineConfig, decoded, composited):
+    """Deterministic resize + encode of already-composited frames.
+
+    Bounded by the encode worker pool. Pure function of its inputs.
+    """
     mode = ResizeMode(req.resize_mode)
     dst_w, dst_h = compute_target_size(
-        decoded.width,
-        decoded.height,
-        req.width,
-        req.height,
-        mode,
+        decoded.width, decoded.height, req.width, req.height, mode,
         max_dimension=cfg.limits.max_dimension,
     )
     if dst_w * dst_h > cfg.limits.max_canvas_pixels:
@@ -59,17 +58,22 @@ def process(req: ProcessRequest, config: PipelineConfig | None = None) -> Proces
             request_id=req.request_id,
             source_id=req.source_id,
         )
-    crop_box = (req.width, req.height) if mode is ResizeMode.COVER and req.width and req.height else None
+    crop_box = (
+        (req.width, req.height)
+        if mode is ResizeMode.COVER and req.width and req.height
+        else None
+    )
     resized = resize_frames(
         composited, (decoded.width, decoded.height), (dst_w, dst_h), mode, crop_box
     )
-
-    # 5. Encode deterministically.
-    return encode(decoded, resized, _effective_req(req), cfg, (dst_w, dst_h))
+    return encode(decoded, resized, req, cfg, (dst_w, dst_h))
 
 
-def _effective_req(req: ProcessRequest) -> ProcessRequest:
-    return req
+def process(req: ProcessRequest, config: PipelineConfig | None = None) -> ProcessResult:
+    """Synchronously process one request; raises PipelineError on failure."""
+    cfg = config or DEFAULT_CONFIG
+    decoded, composited = decode_stage(req, cfg)
+    return encode_stage(req, cfg, decoded, composited)
 
 
 def process_or_reject(

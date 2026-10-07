@@ -18,13 +18,11 @@ or failed request cannot poison later ones.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from dataclasses import dataclass, field
 
 from .config import PipelineConfig
 from .errors import QueueFullError
 from .model import ProcessRequest, ProcessResult, RejectedResult
-from .pipeline import process
 from .validation import validate_process_request, validate_request_bytes
 
 
@@ -115,16 +113,28 @@ class Scheduler:
         )
         loop = asyncio.get_running_loop()
 
-        def _work() -> ProcessResult | RejectedResult:
-            # Bound CPU work by the decode and encode worker pools inside
-            # the single executor invocation, using threading events that
-            # respect both limits. process() itself is pure/stateless.
-            return process(req, self.config)
+        def _decode_work():
+            from .pipeline import decode_stage
+
+            return decode_stage(req, self.config)
+
+        def _encode_work(decoded, composited):
+            from .pipeline import encode_stage
+
+            return encode_stage(req, self.config, decoded, composited)
 
         try:
-            async with self._decode_slots:
-                async with asyncio.timeout(timeout):
-                    result = await loop.run_in_executor(None, _work)
+            async with asyncio.timeout(timeout):
+                # Input-heavy stage bounded by the decode pool.
+                async with self._decode_slots:
+                    decoded, composited = await loop.run_in_executor(
+                        None, _decode_work
+                    )
+                # Output-heavy stage bounded independently by the encode pool.
+                async with self._encode_slots:
+                    result = await loop.run_in_executor(
+                        None, _encode_work, decoded, composited
+                    )
             return result
         except TimeoutError:
             return RejectedResult(
@@ -147,9 +157,3 @@ class Scheduler:
 
     async def aclose(self) -> None:
         self._closed = True
-
-
-def _safe_get_nowait(q: asyncio.Queue) -> None:
-    with contextlib.suppress(asyncio.QueueEmpty):
-        q.get_nowait()
-        q.task_done()
