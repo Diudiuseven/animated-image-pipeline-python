@@ -85,7 +85,7 @@ def parse_gif(data: bytes) -> tuple[int, int, int, list[GifFrame]]:
     loop_count = 1  # default: play once
     frames: list[GifFrame] = []
 
-    pending_duration = 100  # GIF default
+    pending_duration = 0  # absent GCE -> 0 delay (we do not invent 100ms)
     pending_disposal = 0
     pending_transparent: int | None = None
 
@@ -180,6 +180,7 @@ def parse_gif(data: bytes) -> tuple[int, int, int, list[GifFrame]]:
             )
             pending_disposal = 0
             pending_transparent = None
+            pending_duration = 0
         else:
             raise GifParseError(f"unknown GIF block marker: 0x{m:02x}")
 
