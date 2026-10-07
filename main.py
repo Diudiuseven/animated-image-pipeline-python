@@ -1,13 +1,13 @@
+"""Local development entry point: serves the image pipeline HTTP API."""
+
 import uvicorn
-from fastapi import FastAPI
 
-app = FastAPI()
+from imagepipeline.api import app
 
 
-@app.get("/")
-def read_root():
-    return {"Hello": "World"}
+def main() -> None:
+    uvicorn.run(app, host="127.0.0.1", port=8000)
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=0)
+    main()
