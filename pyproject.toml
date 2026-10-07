@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "animated-image-pipeline-python"
 version = "0.1.0"
@@ -5,8 +9,21 @@ requires-python = ">=3.14.4"
 dependencies = [
     "fastapi[standard]>=0.141.1",
     "pytest>=8.0",
+    "pillow>=11.0",
+    "numpy>=2.0",
 ]
 
 [[tool.uv.index]]
 url = "https://mirrors.aliyun.com/pypi/simple/"
 default = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
